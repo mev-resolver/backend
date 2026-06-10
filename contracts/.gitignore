@@ -1,0 +1,16 @@
+.env
+node_modules/
+dist/
+build/
+coverage/
+*.log
+artifacts/
+cache/
+*.cache
+*.tmp
+*.bak
+*.swp
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace

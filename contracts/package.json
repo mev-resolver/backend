@@ -1,0 +1,9 @@
+{
+  "name": "resolver-contracts",
+  "version": "1.0.0",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+    "hardhat": "^2.22.2",
+    "dotenv": "^16.4.5"
+  }
+}
