@@ -13,8 +13,11 @@ from app.core.settlement import settlement_engine
 from app.core.simulator import attack_simulator
 from app.services.price_drift import price_drift_service
 
-logging.basicConfig(level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+# Set log level to DEBUG to see gas price and detection details
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 
@@ -45,7 +48,7 @@ async def _on_attack(attack: SandwichAttack) -> None:
 
 
 async def _mempool_watcher() -> None:
-    """Subscribe to Sepolia pending transactions and run them through detection."""
+    """Subscribe to pending transactions and run them through detection."""
     if not settings.SEPOLIA_RPC_URL:
         logger.warning("SEPOLIA_RPC_URL not set - mempool watcher disabled")
         return
@@ -59,25 +62,31 @@ async def _mempool_watcher() -> None:
                .replace("http://", "ws://"))
     logger.info("Mempool watcher connecting to %s", wss_url)
 
+    from web3 import AsyncWeb3
+    from web3.providers.websocket import WebSocketProvider
+
     backoff = 5
     while True:
         try:
-            from web3 import AsyncWeb3, WebSocketProvider
             async with AsyncWeb3(WebSocketProvider(wss_url)) as w3:
-                logger.info("Mempool watcher live on Sepolia")
+                logger.info("Mempool watcher live")
                 backoff = 5
-                async for tx_hash in await w3.eth.subscribe("newPendingTransactions"):
+                async for tx_hash in w3.eth.subscribe("newPendingTransactions"):
                     try:
-                        tx = await w3.eth.get_transaction(tx_hash)
+                        tx_hash_hex = tx_hash.hex() if isinstance(tx_hash, bytes) else tx_hash
+                        tx = await w3.eth.get_transaction(tx_hash_hex)
                         if tx and tx.get("to") and tx["to"].lower() == dex_addr:
+                            gas_price = int(tx.get("gasPrice") or tx.get("maxFeePerGas") or 0)
+                            logger.debug("Mempool tx: %s gas=%d from=%s", tx_hash_hex[:10], gas_price, tx["from"])
                             await detection_engine.process_raw(
-                                tx_hash=tx_hash.hex(),
+                                tx_hash=tx_hash_hex,
                                 sender=tx["from"],
                                 calldata=tx["input"].hex(),
-                                gas_price=int(tx.get("gasPrice") or tx.get("maxFeePerGas") or 0),
+                                gas_price=gas_price,
                             )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("Error processing pending tx: %s", e)
+                        continue
         except asyncio.CancelledError:
             break
         except Exception as e:

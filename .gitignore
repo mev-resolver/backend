@@ -31,3 +31,4 @@ coverage/
 *.keystore
 .next
 .env.local.example
+.env.production

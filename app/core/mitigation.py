@@ -66,17 +66,26 @@ class MitigationEngine:
                     "attack_id": attack.attack_id,
                     "victim_tx_hash": bundle.victim_tx_hash,
                     "target_lane": "protected",
-                    "relay": "flashbots",
+                    "relay": "flashbots" if settings.flashbots_enabled else "public_fallback",
                 }
                 store_event("mitigation_applied", mit_payload)
                 await manager.broadcast({"type": "mitigation_applied",
                                          "data": mit_payload, "timestamp": time.time()})
 
-                # Attempt real Flashbots submission
+                # Get raw victim transaction
                 raw_tx = self._pending_raw.pop(bundle.victim_tx_hash, None)
-                success, final_hash = await self._submit_flashbots(bundle, raw_tx)
-                if not success:
-                    logger.warning("Flashbots failed, public mempool fallback")
+                success = False
+                final_hash = None
+
+                # If Flashbots is enabled and we have a relay URL, try it
+                if settings.flashbots_enabled and settings.FLASHBOTS_RELAY_URL:
+                    success, final_hash = await self._submit_flashbots(bundle, raw_tx)
+                    if not success:
+                        logger.warning("Flashbots failed, public mempool fallback")
+                        success, final_hash = await self._submit_public(bundle, raw_tx)
+                else:
+                    # Local testnet – submit directly
+                    logger.info("Flashbots disabled (local testnet), submitting victim tx directly")
                     success, final_hash = await self._submit_public(bundle, raw_tx)
 
                 mit_ms = int((time.time() - t0) * 1000)
@@ -91,7 +100,8 @@ class MitigationEngine:
                     "victim_tx_hash": bundle.victim_tx_hash,
                     "final_tx_hash": final_hash or bundle.victim_tx_hash,
                     "status": status, "mitigation_ms": mit_ms,
-                    "etherscan_url": "https://sepolia.etherscan.io/tx/" + (final_hash or bundle.victim_tx_hash),
+                    "etherscan_url": ("https://sepolia.etherscan.io/tx/" + (final_hash or bundle.victim_tx_hash)
+                                      if not settings.flashbots_enabled else ""),
                 }
                 store_event("settlement_confirmed", settle_payload)
                 await manager.broadcast({"type": "settlement_confirmed",
@@ -122,7 +132,6 @@ class MitigationEngine:
             relayer = Account.from_key(settings.PRIVATE_KEY_RELAYER)
             w3 = Web3()
 
-            # Get target block
             from app.utils.web3_utils import get_web3
             live_w3 = get_web3()
             current_block = live_w3.eth.block_number
@@ -139,7 +148,6 @@ class MitigationEngine:
                 "id": 1,
             })
 
-            # Flashbots signature: sign keccak256 of body
             msg_hash = w3.keccak(text=body)
             signed_msg = relayer.sign_message(encode_defunct(primitive=msg_hash))
             fb_sig = f"{relayer.address}:{signed_msg.signature.hex()}"
@@ -169,6 +177,8 @@ class MitigationEngine:
     async def _submit_public(self, bundle: ProtectedBundle,
                               raw_tx: Optional[bytes]) -> tuple:
         if not raw_tx:
+            # No raw tx – treat as success (simulated)
+            logger.info("No raw tx, marking bundle %s as confirmed (simulated)", bundle.bundle_id)
             return True, bundle.victim_tx_hash
         try:
             from app.utils.web3_utils import get_web3

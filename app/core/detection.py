@@ -32,11 +32,6 @@ class SandwichAttack:
 
 
 class DetectionEngine:
-    """
-    Rule-based sandwich detector with sliding window.
-    Adapter interface: swap out with ML model by replacing _detect().
-    """
-
     def __init__(self):
         self._pool: deque = deque(maxlen=WINDOW_SIZE)
         self._seen: set   = set()
@@ -46,6 +41,7 @@ class DetectionEngine:
         self._listeners.append(listener)
 
     async def process(self, tx: MemTx) -> Optional[SandwichAttack]:
+        logger.debug("Processing tx: %s gas=%d is_bot=%s", tx.tx_hash[:8], tx.gas_price, tx.is_bot)
         self._pool.append(tx)
         return await self._detect()
 
@@ -60,27 +56,46 @@ class DetectionEngine:
             token_in=decoded["token_in"], token_out=decoded["token_out"],
             amount_in=decoded["amount_in"] / 1e18,
             gas_price=gas_price, timestamp=time.time(),
+            is_bot=False,
         )
         await self.process(tx)
 
     async def _detect(self) -> Optional[SandwichAttack]:
         txs = list(self._pool)
+        if len(txs) < 3:
+            return None
+
         now = time.time()
-        for i in range(len(txs) - 2):
+        start = max(0, len(txs) - 20)   # only recent transactions
+        for i in range(start, len(txs) - 2):
             buy    = txs[i]
             victim = txs[i + 1]
             sell   = txs[i + 2]
+
             if now - buy.timestamp > TIME_WINDOW:
                 continue
+
+            # Token direction must match (buy and victim swap the same pair)
             if buy.token_in != victim.token_in or buy.token_out != victim.token_out:
+                logger.debug("Token mismatch: buy (%s->%s) vs victim (%s->%s)",
+                             buy.token_in, buy.token_out, victim.token_in, victim.token_out)
                 continue
-            if buy.sender != sell.sender:
+
+            # Both buy and sell must be from bot accounts (front‑run and back‑run can be different bots)
+            if not (buy.is_bot and sell.is_bot):
+                logger.debug("Bot check failed: buy.is_bot=%s, sell.is_bot=%s", buy.is_bot, sell.is_bot)
                 continue
+
+            # Gas ordering: buy gas > victim gas > sell gas
             if not (buy.gas_price > victim.gas_price > sell.gas_price):
+                logger.debug("Gas ordering failed: buy=%d victim=%d sell=%d",
+                             buy.gas_price, victim.gas_price, sell.gas_price)
                 continue
+
             key = f"{buy.tx_hash}:{victim.tx_hash}:{sell.tx_hash}"
             if key in self._seen:
                 continue
+
             self._seen.add(key)
             import random, string
             aid = "att_" + "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
@@ -93,6 +108,7 @@ class DetectionEngine:
             for listener in self._listeners:
                 asyncio.create_task(listener(attack))
             return attack
+
         return None
 
 

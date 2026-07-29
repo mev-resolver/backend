@@ -40,6 +40,15 @@ class Settings(BaseSettings):
         missing = [k for k in REQUIRED if not getattr(self, k, "")]
         return missing
 
+    @property
+    def flashbots_enabled(self) -> bool:
+        """Disable Flashbots when using a local testnet (Anvil / Hardhat)."""
+        url = self.SEPOLIA_RPC_URL.lower()
+        if "localhost" in url or "127.0.0.1" in url:
+            return False
+        # Also allow explicit override via env (optional)
+        return True
+
 @lru_cache()
 def get_settings() -> Settings:
     return Settings()
